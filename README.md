@@ -17,7 +17,7 @@ sudo apt install pipx playerctl dunst wireplumber curl cava
 sudo pacman -S python-pipx playerctl dunst wireplumber curl cava
 
 pipx ensurepath
-pipx install git+https://github.com/<ton-user>/tdash
+pipx install git+https://github.com/mirtonze/tdash
 ```
 
 Ou tout d'un coup (détecte apt / dnf / pacman) : `./install.sh` depuis le dépôt cloné,
