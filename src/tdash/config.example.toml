@@ -1,0 +1,35 @@
+# Créé par : tdash --init  (fichier : ~/.config/dash/config.toml)
+# ATTENTION (TOML) : les clés globales doivent être AVANT la première [section].
+
+city = "Chelles"
+
+# Apparence : par défaut, dash reprend les couleurs de ton terminal.
+# theme = "nord"             # ou gruvbox, dracula, catppuccin-mocha, tokyo-night…
+# btop_theme = "dracula"     # réutilise un thème btop (nom dans ~/.config/btop/themes ou chemin d'un .theme)
+
+# Météo animée avec weathr (cargo install weathr) : lance dash avec -w, ou décommente :
+# weather_mode = "weathr"
+# weathr_cmd = "weathr --hide-location"
+# weathr_colors = "terminal"   # "terminal" (défaut) = couleurs de TA palette, choisies pour rester lisibles
+#                              # (toit rouge, fumée blanche, herbe verte…) ; "truecolor" = RVB d'origine de weathr
+
+[pve]
+host = "192.168.1.10"       # IP ou nom du nœud, SANS https:// (port 8006 par défaut)
+user = "monitor@pve"        # utilisateur Proxmox (ex. root@pam ou monitor@pve)
+token_name = "dash"         # l'ID du token SEUL (pas "monitor@pve!dash")
+token_value = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"   # le secret (UUID) affiché une seule fois à la création
+# Attention : si la variable PVE_TOKEN existe dans ton shell, elle remplace token_value.
+verify_ssl = false          # true si ton certificat est valide
+# Vérifier : tdash --pve-check
+
+# Couleur de chaque panneau : nom ANSI (palette du terminal) ou #rrggbb.
+# Noms : black red green yellow blue magenta cyan white + bright_xxx
+[colors]
+# sys = "cyan"
+# weather = "bright_blue"
+# notifs = "magenta"
+# perf = "blue"
+# player = "green"            # lecteur + cava (un seul panneau)
+# procs = "red"
+# pve = "#ff8800"            # orange exact (le 16 couleurs ANSI n'a pas d'orange : "yellow" s'en approche)
+# help = "bright_white"
