@@ -273,7 +273,7 @@ def player(w: int, h: int):
         return "rien en lecture"
     head, pos, length = out.rsplit("|", 2)
     status, artist, title, album = (head.split("|", 3) + ["", "", "", ""])[:4]
-    icon = {"Playing": "▶", "Paused": "⏸"}.get(status, "■")
+    icon = {"Playing": "⏸", "Paused": "▶"}.get(status, "■")
     lines = [f"{icon} {title}", f"{artist} — {album}" if album else artist]
     try:
         p, ln = int(pos) / 1e6, int(length) / 1e6
