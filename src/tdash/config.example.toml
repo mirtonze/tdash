@@ -13,6 +13,9 @@ city = "Chelles"
 # weathr_colors = "terminal"   # "terminal" (défaut) = couleurs de TA palette, choisies pour rester lisibles
 #                              # (toit rouge, fumée blanche, herbe verte…) ; "truecolor" = RVB d'origine de weathr
 
+# Panneau Réseau (touche 8) : préfixes d'interfaces à masquer ([] = tout afficher).
+# net_ignore = ["lo", "veth", "docker", "br-", "virbr", "vnet"]
+
 [pve]
 host = "192.168.1.10"       # IP ou nom du nœud, SANS https:// (port 8006 par défaut)
 user = "monitor@pve"        # utilisateur Proxmox (ex. root@pam ou monitor@pve)
@@ -30,6 +33,7 @@ verify_ssl = false          # true si ton certificat est valide
 # notifs = "magenta"
 # perf = "blue"
 # player = "green"            # lecteur + cava (un seul panneau)
+# net = "bright_cyan"
 # procs = "red"
 # pve = "#ff8800"            # orange exact (le 16 couleurs ANSI n'a pas d'orange : "yellow" s'en approche)
 # help = "bright_white"

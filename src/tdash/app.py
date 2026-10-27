@@ -8,6 +8,7 @@ Par défaut les couleurs sont celles de ton terminal (palette ANSI).
 import argparse
 import copy
 import fcntl
+import ipaddress
 import json
 import locale
 import os
@@ -15,6 +16,7 @@ import re
 import shlex
 import shutil
 import signal
+import socket
 import struct
 import subprocess
 import tempfile
@@ -50,10 +52,10 @@ NOTIF_IDS: list = []
 HIST: deque = deque(maxlen=400)
 
 # numéro de panneau = position + 1 (comme les boîtes de btop)
-ORDER = ["sys", "weather", "notifs", "perf", "player", "procs", "pve"]
+ORDER = ["sys", "weather", "notifs", "perf", "player", "procs", "pve", "net"]
 TITLES = {
     "sys": "Système", "weather": "Météo", "notifs": "Notifications", "perf": "Perfs",
-    "player": "Lecteur", "procs": "Processus", "pve": "Proxmox",
+    "player": "Lecteur", "net": "Réseau", "procs": "Processus", "pve": "Proxmox",
 }
 # touches numériques : rangée de chiffres en QWERTY, et caractères non shiftés en AZERTY
 DIGITS = {
@@ -65,10 +67,10 @@ DIGITS = {
 # modifiable dans config.toml, section [colors]
 DEFAULT_COLORS = {
     "sys": "cyan", "weather": "bright_blue", "notifs": "magenta", "perf": "blue",
-    "player": "green", "procs": "red", "pve": "yellow", "help": "bright_white",
+    "player": "green", "net": "bright_cyan", "procs": "red", "pve": "yellow", "help": "bright_white",
 }
 # avec --theme NOM, on prend les couleurs du thème (rôles) plutôt que celles du terminal
-ROLE_OF = {"blue": "primary", "cyan": "secondary", "bright_blue": "accent", "magenta": "accent",
+ROLE_OF = {"blue": "primary", "cyan": "secondary", "bright_cyan": "secondary", "bright_blue": "accent", "magenta": "accent",
            "green": "success", "yellow": "warning", "red": "error"}
 ANSI_NAMES = {"black", "red", "green", "yellow", "blue", "magenta", "cyan", "white", "bright_black", "bright_red",
               "bright_green", "bright_yellow", "bright_blue", "bright_magenta", "bright_cyan", "bright_white"}
@@ -151,7 +153,7 @@ def load_config() -> dict:
     # en TOML, une clé écrite après [pve] appartient à [pve] : on la remonte au niveau global
     pve = cfg.get("pve")
     if isinstance(pve, dict):
-        for k in ("city", "theme", "btop_theme", "weather_mode", "weathr_cmd", "weathr_colors"):
+        for k in ("city", "theme", "btop_theme", "weather_mode", "weathr_cmd", "weathr_colors", "net_ignore"):
             if k in pve and k not in cfg:
                 cfg[k] = pve.pop(k)
     return cfg
@@ -265,6 +267,101 @@ def perf(w: int, h: int):
         (f"Temp {t:.0f}°C   " if t is not None else "") + f"Réseau ↑{human(up)} ↓{human(down)}",
     ]
     return "\n".join(cut(line, w) for line in lines[: max(h, 1)])
+
+
+# ───────────── réseau : interfaces actives, IP, WireGuard, débit ─────────────
+NET_IGNORE = ("lo", "veth", "docker", "br-", "virbr", "vnet")  # modifiable : net_ignore dans config.toml
+_nic_prev: dict = {}
+_wg_cache: dict = {}
+
+
+def is_wireguard(name: str, base: str = "/sys/class/net") -> bool:
+    """Interface WireGuard ? (lisible sans root dans sysfs, quel que soit son nom)"""
+    try:
+        return "DEVTYPE=wireguard" in Path(base, name, "uevent").read_text()
+    except OSError:
+        return False
+
+
+def wg_handshake(name: str):
+    """Âge (s) du dernier handshake ; None si illisible (wg demande les droits root)."""
+    now = time.time()
+    c = _wg_cache.get(name)
+    if c and now - c[0] < 5:
+        return c[1]
+    out = sh(f"wg show {shlex.quote(name)} latest-handshakes", timeout=2)
+    ts = [int(p[-1]) for p in (l.split() for l in out.splitlines()) if p and p[-1].isdigit() and int(p[-1]) > 0]
+    age = int(now - max(ts)) if ts else None
+    _wg_cache[name] = (now, age)
+    return age
+
+
+def fmt_age(s: int) -> str:
+    return f"{s} s" if s < 120 else f"{s // 60} min" if s < 7200 else f"{s // 3600} h"
+
+
+def rate_short(n: float) -> str:
+    for u in ("", "K", "M"):
+        if n < 1024:
+            return f"{n:.0f}{u}" if (u == "" or n >= 100) else f"{n:.1f}{u}"
+        n /= 1024
+    return f"{n:.1f}G"
+
+
+def iface_ip(addrs: list) -> str:
+    v4 = [a for a in addrs if a.family == socket.AF_INET]
+    if v4:
+        a = v4[0]
+        try:
+            return f"{a.address}/{bin(int(ipaddress.IPv4Address(a.netmask))).count('1')}"
+        except Exception:
+            return a.address
+    v6 = [a for a in addrs if a.family == socket.AF_INET6 and not a.address.lower().startswith("fe80")]
+    return v6[0].address.split("%")[0] if v6 else ""
+
+
+def netinfo(w: int, h: int):
+    ignore = tuple(CONFIG.get("net_ignore", NET_IGNORE))
+    stats, addrs, io = psutil.net_if_stats(), psutil.net_if_addrs(), psutil.net_io_counters(pernic=True)
+    now = time.time()
+    rows = []
+    for name, st in stats.items():
+        if not st.isup or (ignore and name.startswith(ignore)):
+            continue
+        up = down = 0.0
+        c, prev = io.get(name), _nic_prev.get(name)
+        if c:
+            if prev:
+                dt = max(now - prev[0], 1e-6)
+                up, down = (c.bytes_sent - prev[1]) / dt, (c.bytes_recv - prev[2]) / dt
+            _nic_prev[name] = (now, c.bytes_sent, c.bytes_recv)
+        rows.append((name, iface_ip(addrs.get(name, [])), up, down, is_wireguard(name)))
+    if not rows:
+        return "aucune interface active"
+    rows.sort(key=lambda r: (not r[4], r[0]))  # WireGuard d'abord
+    nw, ipw = max(len(r[0]) for r in rows), max(len(r[1]) for r in rows)
+    long_fmt = 2 + nw + 2 + ipw + 2 + 19 <= w
+    lines = []
+    for name, ip, up, down, wg in rows:
+        t = Text()
+        t.append("◈ " if wg else "● ", style="bright_magenta" if wg else "green")
+        t.append(name.ljust(nw), style="bold bright_magenta" if wg else "bold")
+        t.append("  " + (ip or "pas d'IP").ljust(ipw), style="" if ip else "dim")
+        if long_fmt:
+            t.append(f"  ↑{human(up):>8}", style="yellow")
+            t.append(f" ↓{human(down):>8}", style="cyan")
+        else:
+            t.append(f" ↑{rate_short(up)}", style="yellow")
+            t.append(f" ↓{rate_short(down)}", style="cyan")
+        t.truncate(w, overflow="ellipsis")
+        lines.append(t)
+        if wg:
+            age = wg_handshake(name)
+            if age is not None:
+                hs = Text("  handshake il y a " + fmt_age(age), style="green" if age < 180 else "yellow")
+                hs.truncate(w, overflow="ellipsis")
+                lines.append(hs)
+    return Text("\n").join(lines[: max(h, 1)])
 
 
 def player(w: int, h: int):
@@ -860,17 +957,17 @@ class Term(Static):
 
 # ───────────── disposition : colonnes de panneaux empilés ─────────────
 LAYOUT_FILE = Path.home() / ".config/dash/layout.json"
-DEFAULT_SPEC = {"sys": "6", "weather": "4", "notifs": "1fr", "perf": "10",
+DEFAULT_SPEC = {"net": "7", "sys": "6", "weather": "4", "notifs": "1fr", "perf": "10",
                 "player": "13", "procs": "1fr", "pve": "1fr"}
 SPEC_RE = re.compile(r"^(\d+|\d+(\.\d+)?fr)$")
 MIN_H, MIN_W = 3, 8
 
 
 def make_defaults(weathr: bool, pve: bool = False) -> dict:
-    side = [["sys", "6"], ["player", "13"], ["weather", "4"], ["notifs", "1fr"]]
+    side = [["sys", "6"], ["player", "13"], ["weather", "4"], ["net", "7"], ["notifs", "1fr"]]
     d = {
-        "narrow": {"cols": [{"w": 1, "panels": [["sys", "6"], ["perf", "1fr"], ["player", "12"]]}],
-                   "hidden": ["weather", "notifs", "procs", "pve"]},
+        "narrow": {"cols": [{"w": 1, "panels": [["sys", "6"], ["perf", "1fr"], ["player", "12"], ["net", "7"]]}],
+                   "hidden": ["weather", "notifs", "procs", "pve", "net"]},
         "medium": {"cols": [{"w": 3, "panels": [["perf", "10"], ["procs", "1fr"], ["pve", "1fr"]]},
                             {"w": 2, "panels": copy.deepcopy(side)}],
                    "hidden": []},
@@ -880,7 +977,7 @@ def make_defaults(weathr: bool, pve: bool = False) -> dict:
                  "hidden": []},
     }
     if weathr:  # weathr veut au moins 70x20 : on lui réserve une grande colonne
-        small = [["sys", "6"], ["player", "13"], ["notifs", "1fr"]]
+        small = [["sys", "6"], ["player", "13"], ["net", "7"], ["notifs", "1fr"]]
         d["medium"] = {"cols": [{"w": 2, "panels": [["weather", "1fr"], ["perf", "10"]]},
                                 {"w": 1, "panels": small + [["pve", "1fr"]]}],
                        "hidden": ["procs"]}
@@ -1026,7 +1123,7 @@ def toggle_unit(lay: dict, pid: str, cur_h: int) -> None:
 def build_help(weathr: bool) -> Text:
     rows = [
         ("Panneaux", None),
-        ("1-7", "afficher / masquer un panneau (numéro dans le titre) · 0 = défaut"),
+        ("1-8", "afficher / masquer un panneau (numéro dans le titre) · 0 = défaut"),
         ("Lecteur + cava", None),
         ("espace", "pause · n suivant · p précédent" + (" · w relancer weathr" if weathr else "")),
         ("Volume", None),
@@ -1188,6 +1285,7 @@ class Dash(App):
                 yield Panel(T("weather"), weather, 600, id="weather")
             yield Panel(T("notifs"), notifs, 5, id="notifs")
             yield Panel(T("perf"), perf, 1, id="perf")
+            yield Panel(T("net"), netinfo, 1, id="net")
             yield Media(T("player"), id="player")
             yield Procs(T("procs"), id="procs")
             if self.pve:
@@ -1241,7 +1339,7 @@ class Dash(App):
             self.screen.styles.background = c["main_bg"]
         boxes = {
             "sys": "cpu_box", "perf": "cpu_box", "player": "mem_box",
-            "weather": "net_box", "notifs": "net_box", "procs": "proc_box", "pve": "mem_box",
+            "weather": "net_box", "notifs": "net_box", "procs": "proc_box", "pve": "mem_box", "net": "net_box",
         }
         for pid, key in boxes.items():
             try:
