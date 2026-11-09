@@ -210,7 +210,7 @@ def sysinfo(w: int, h: int):
     lines = [now.strftime("%H:%M:%S"), now.strftime("%A %d %B %Y").capitalize()]
     b = psutil.sensors_battery()
     if b:
-        lines.append(f"BAT {bar(b.percent, bw)} {b.percent:3.0f}%{' ⚡' if b.power_plugged else ''}")
+        lines.append(f"BAT {bar(b.percent, bw)} {b.percent:3.0f}%{' 󱐋' if b.power_plugged else ''}")
     v = get_volume()
     if v:
         lines.append(f"VOL {bar(min(v[0], 100), bw)} {v[0]:3.0f}%{' muet' if v[1] else ''}")
