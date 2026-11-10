@@ -8,6 +8,7 @@ Par défaut les couleurs sont celles de ton terminal (palette ANSI).
 import argparse
 import copy
 import fcntl
+import html
 import ipaddress
 import json
 import locale
@@ -21,6 +22,7 @@ import struct
 import subprocess
 import tempfile
 import termios
+import textwrap
 import threading
 import time
 import tomllib
@@ -30,6 +32,9 @@ from datetime import datetime
 from pathlib import Path
 
 import psutil
+from rich import box
+from rich.console import Group
+from rich.panel import Panel as RichPanel
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
@@ -81,6 +86,13 @@ def to_color(c: str) -> str:
     if c.startswith(("#", "ansi_")):
         return c
     return "ansi_" + c if c in ANSI_NAMES else c
+
+
+def rich_color(c):
+    """Couleur Textual (« ansi_magenta », « #rrggbb ») -> nom de couleur Rich."""
+    if not c:
+        return None
+    return str(c)[5:] if str(c).startswith("ansi_") else str(c)
 
 
 CAVA_CONF = """[general]
@@ -382,7 +394,23 @@ def player(w: int, h: int):
     return "\n".join(cut(line, w) for line in lines[:h])
 
 
-def notifs(w: int, h: int):
+NOTIF_BODY_LINES = 4  # lignes de contenu max par notification
+
+
+def clean_markup(s: str) -> str:
+    """Retire le balisage (<b>…</b>) et les entités HTML que dunst peut laisser dans le texte."""
+    return html.unescape(re.sub(r"<[^>]+>", "", s or "")).strip()
+
+
+def wrap_text(text: str, width: int) -> list:
+    out = []
+    for para in text.splitlines() or [""]:
+        out += textwrap.wrap(para, max(width, 4)) or [""]
+    return out
+
+
+def notifs(w: int, h: int, color=None):
+    """Une boîte par notification : titre, puis le contenu décalé (même style que les autres panneaux)."""
     try:
         items = json.loads(sh("dunstctl history"))["data"][0]
     except Exception:
@@ -391,7 +419,32 @@ def notifs(w: int, h: int):
     NOTIF_IDS[:] = [n["id"]["data"] for n in items]
     if not items:
         return "aucune notification"
-    return "\n".join(cut(f"• {n['appname']['data']}: {n['summary']['data']}", w) for n in items[:h])
+    inner, indent = max(w - 4, 8), 4  # largeur utile dans une boîte (bordures + marges) ; décalage du contenu
+    boxes, used = [], 0
+    for n in items:
+        left = h - used
+        if left < 3:  # plus de place pour une boîte (2 bordures + 1 ligne)
+            break
+        app = clean_markup(n["appname"]["data"]) or "?"
+        lines = [Text(line, style="bold") for line in wrap_text(clean_markup(n["summary"]["data"]), inner)[:2]]
+        body = wrap_text(clean_markup(n.get("body", {}).get("data", "")), inner - indent)
+        if body == [""]:
+            body = []
+        if len(body) > NOTIF_BODY_LINES:
+            body = body[:NOTIF_BODY_LINES]
+            body[-1] = cut(body[-1] + "…", inner - indent)
+        lines += [Text(" " * indent + line) for line in body]
+        lines = lines[: left - 2]  # tient dans la place restante
+        boxes.append(RichPanel(Text("\n").join(lines), box=box.ROUNDED, border_style=color or "dim",
+                               title=Text(app), title_align="left", padding=(0, 1)))
+        used += len(lines) + 2
+    rest = len(items) - len(boxes)
+    if rest > 0 and used < h:
+        boxes.append(Text(f" … +{rest} autre{'s' if rest > 1 else ''}", style="dim"))
+    return Group(*boxes)
+
+
+notifs.wants_color = True  # Panel.collect lui passe la couleur du panneau
 
 
 _px = None
@@ -443,12 +496,12 @@ def pve_connect():
 def pve_error(e: Exception) -> str:
     t = str(e)
     if "401" in t:
-        return "Proxmox : authentification refusée (user, token_name ou secret) — lance ttdash --pve-check"
-    return f"Proxmox indisponible : {t} — lance ttdash --pve-check"
+        return "Proxmox : authentification refusée (user, token_name ou secret) — lance tdash --pve-check"
+    return f"Proxmox indisponible : {t} — lance tdash --pve-check"
 
 
 def pve_check(px=None) -> None:
-    """Diagnostic pas à pas de la connexion Proxmox (ttdash --pve-check)."""
+    """Diagnostic pas à pas de la connexion Proxmox (tdash --pve-check)."""
     s, warns = pve_settings()
     cfgfile = Path.home() / ".config/dash/config.toml"
     tok = s["token"]
@@ -586,7 +639,10 @@ class Panel(Static):
 
     def collect(self, w: int, h: int) -> None:
         try:
-            r = self.fn(w, h)
+            if getattr(self.fn, "wants_color", False):
+                r = self.fn(w, h, rich_color(self.app.box_colors.get(self.id)))
+            else:
+                r = self.fn(w, h)
         except Exception as e:
             r = f"erreur : {e}"
         if isinstance(r, str):
