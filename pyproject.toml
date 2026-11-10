@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tdash"
-version = "0.1.0"
+version = "0.3.0"
 description = "Dashboard TUI personnalisable : perfs, météo (weathr), lecteur + cava, notifications, processus, Proxmox"
 readme = "README.md"
 requires-python = ">=3.11"
